@@ -1,0 +1,24 @@
+직원 PC 배포용 MariaDB JSON 버전 빌드 명령
+========================================
+
+이제 직원 PC에 배포할 EXE는 hanyang_monitor.py가 아니라 아래 파일을 빌드합니다.
+
+    hanyang_monitor_mariadb.py
+
+빌드 명령:
+
+    cd monitor
+    pip install -r requirements.txt
+    pip install pyinstaller
+    pyinstaller --noconsole --onefile --name HanyangMonitor hanyang_monitor_mariadb.py
+
+결과물:
+
+    dist\HanyangMonitor.exe
+
+서버 IP/포트 변경이 필요하면 hanyang_monitor_mariadb.py 상단의 기본 SERVER_URL을 수정하거나,
+직원 PC 환경변수 HANYANG_MONITOR_SERVER_URL을 설정하세요.
+
+기본값:
+
+    http://12.26.204.100:8080
