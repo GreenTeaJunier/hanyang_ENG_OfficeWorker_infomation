@@ -1,0 +1,36 @@
+HYserver MariaDB 모드 실행 방법
+==============================
+
+기존 HYserver.py는 보존합니다.
+MariaDB 전환 운영 서버는 아래 파일로 실행하세요.
+
+    Pyeongtaek_5D_Site_Server\HYserver_mariadb.py
+
+서버 PC 실행 순서:
+
+    pip install pymysql
+
+    set HYSERVER_DB_HOST=127.0.0.1
+    set HYSERVER_DB_PORT=3306
+    set HYSERVER_DB_USER=hanyang
+    set HYSERVER_DB_PASSWORD=비밀번호
+    set HYSERVER_DB_NAME=hanyang_eng
+    set HYSERVER_EMPLOYEE_TABLE=office_worker_employees
+
+    python office_worker_monitor\tools\check_employee_db.py
+
+    cd Pyeongtaek_5D_Site_Server
+    python HYserver_mariadb.py
+
+정상 동작 기준:
+
+    [EMPLOYEE_DB_OK] MariaDB 사원 목록 로드 완료
+    /api/employees: JSON 반환
+    /receive_status: 클라이언트 상태 수신
+
+주의:
+
+    python HYserver.py
+
+위 명령으로 실행하면 기존 Excel 사원명부 방식으로 동작합니다.
+MariaDB 전환 최종 운영은 반드시 HYserver_mariadb.py를 실행하세요.
