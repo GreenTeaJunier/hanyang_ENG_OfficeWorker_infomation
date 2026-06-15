@@ -18,11 +18,15 @@
 ├── admin/                   # 최고관리자용 접속 제한 인원 설정 GUI
 │   ├── admin.py
 │   └── requirements.txt
+├── legacy/                  # 통합 전 원본 보존 (삭제하지 않음)
+│   ├── Client.py            #   - 구 모니터링 에이전트 원본
+│   └── viewer_v4.py         #   - 구 관제 대시보드 원본
 ├── .gitignore
 └── README.md
 ```
 
 > 기존의 `Client.py` 와 `viewer_v4.py` 는 **`monitor/hanyang_monitor.py` 하나로 통합**되었습니다.
+> 단, 원본은 삭제하지 않고 **`legacy/` 폴더에 그대로 보존**해 두었습니다. (참고/롤백용)
 
 ---
 
