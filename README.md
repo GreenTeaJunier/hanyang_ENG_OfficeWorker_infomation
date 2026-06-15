@@ -1,149 +1,138 @@
-# 한양이엔지 관제 시스템 (hanyang_ENG_OfficeWorker_infomation)
+# 한양이엔지 관제 시스템
 
 한양이엔지 사내 PC에서 **S5D / DDWORKS** 프로그램의 실행·작업 현황을 수집하고,
 구역(라인)별 실시간 접속 현황을 관제 대시보드로 보여주는 시스템입니다.
 
 ---
 
-## 📁 폴더 구조
+## 현재 운영 기준
 
+이제 운영/수정 기준 파일은 아래 통합본 하나입니다.
+
+```text
+monitor/hanyang_monitor.py
 ```
+
+`Client.py`와 `viewer_v4.py`는 `hanyang_monitor.py`로 통합되었고, 구버전 원본 보관 폴더(`legacy/`)는 삭제했습니다.
+
+---
+
+## 폴더 구조
+
+```text
 .
-├── monitor/                 # ★ 통합 독립실행 프로그램 (구 Client.py + viewer_v4.py)
-│   ├── hanyang_monitor.py   #   - 백그라운드 모니터링 + 관제 대시보드 + 트레이 상주
+├── monitor/                 # 통합 독립실행 프로그램
+│   ├── hanyang_monitor.py   # 백그라운드 모니터링 + 관제 대시보드 + 트레이 상주
 │   └── requirements.txt
-├── server/                  # 관제 수집 서버 (Flask)
+├── server/                  # 관제 수집 서버
 │   ├── server.py
 │   └── requirements.txt
-├── admin/                   # 최고관리자용 접속 제한 인원 설정 GUI
+├── admin/                   # 접속 제한 인원 설정 GUI
 │   ├── admin.py
 │   └── requirements.txt
-├── legacy/                  # 통합 전 원본 보존 (삭제하지 않음)
-│   ├── Client.py            #   - 구 모니터링 에이전트 원본
-│   └── viewer_v4.py         #   - 구 관제 대시보드 원본
 ├── .gitignore
 └── README.md
 ```
 
-> 기존의 `Client.py` 와 `viewer_v4.py` 는 **`monitor/hanyang_monitor.py` 하나로 통합**되었습니다.
-> 단, 원본은 삭제하지 않고 **`legacy/` 폴더에 그대로 보존**해 두었습니다. (참고/롤백용)
+---
+
+## 시스템 구성
+
+```text
+[사내 PC들]                         [관제 서버]                     [관리자]
+┌─────────────────────────┐        ┌──────────────┐
+│ monitor/hanyang_monitor │  POST  │              │   GET 사원명부/로그
+│  · 백그라운드 모니터링   │ ─────► │  server.py   │ ◄───────────────┐
+│    (S5D/DDWORKS 감지)    │ /receive_status      │                  │
+│  · 관제 대시보드(GUI)    │ ◄───── │  (Flask)     │                  │
+│  · 트레이 상주           │  로그/명부            │                  │
+└─────────────────────────┘        │  · report_*.csv          ┌──────────────┐
+                                    │  · 사원명부.xlsx          │  admin.py    │
+                                    │  · zone_limits.json ◄──── │ 접속제한 설정 │
+                                    └──────────────┘   POST     └──────────────┘
+```
 
 ---
 
-## 🧩 시스템 구성도
+## 통합 프로그램: `monitor/hanyang_monitor.py`
 
-```
- [사내 PC들]                         [관제 서버]                     [관리자]
- ┌─────────────────────────┐        ┌──────────────┐
- │ monitor/hanyang_monitor │  POST  │              │   GET 사원명부/로그
- │  · 백그라운드 모니터링   │ ─────► │  server.py   │ ◄───────────────┐
- │    (S5D/DDWORKS 감지)    │ /receive_status      │                  │
- │  · 관제 대시보드(GUI)    │ ◄───── │  (Flask)     │                  │
- │  · 트레이 상주           │  로그/명부            │                  │
- └─────────────────────────┘        │  · report_*.csv          ┌──────────────┐
-                                     │  · 사원명부.xlsx          │  admin.py    │
-                                     │  · zone_limits.json ◄──── │ 접속제한 설정 │
-                                     └──────────────┘   POST     └──────────────┘
-```
+`hanyang_monitor.py`는 기존 `Client.py`와 `viewer_v4.py` 역할을 하나로 합친 독립 실행 프로그램입니다.
 
-- **monitor**: 각 PC에서 자기 자신의 S5D/DDWORKS 실행 현황을 서버로 전송하고(구 Client),
-  동시에 전체 구역의 접속 현황을 차트로 보여줍니다(구 Viewer).
-- **server**: 상태를 받아 일자별 CSV로 기록하고, 사원명부/접속제한 정보를 제공합니다.
-- **admin**: 구역별 접속 제한 인원을 서버에 저장합니다. (초과 시 대시보드에서 빨간색 경고)
-
----
-
-## ⭐ 통합 프로그램: `monitor/hanyang_monitor.py`
-
-`Client.py`(백그라운드 모니터링 에이전트)와 `viewer_v4.py`(관제 대시보드)를
-**하나의 독립 실행 프로그램**으로 합쳤습니다.
-
-실행하면 한 프로세스 안에서 다음이 동시에 동작합니다.
-
-| 기능 | 설명 | 출처 |
-|------|------|------|
-| 백그라운드 모니터링 | 이 PC의 S5D/DDWORKS 실행·작업 현황을 10초마다 서버로 전송 | 구 `Client.py` |
-| 관제 대시보드(GUI) | 전체 구역의 접속 현황을 막대그래프/명단으로 표시 | 구 `viewer_v4.py` |
-| 시스템 트레이 상주 | 창을 닫아도 모니터링은 계속, 트레이에서 다시 열기/종료 | 구 `Client.py` |
-| 단일 인스턴스 | 중복 실행 방지(Windows 뮤텍스) | 구 `Client.py` |
-| 부팅 시 자동 실행 | Windows 시작 시 **트레이 모드**로 자동 실행 등록 | 구 `Client.py` |
-
-### 동작 방식
-- **창의 X 버튼** → 프로그램이 종료되지 않고 **트레이로 숨겨집니다**(모니터링 계속).
-- **트레이 아이콘 더블클릭** → 관제 화면 다시 열기.
-- **트레이 메뉴 → ❌ 완전 종료** → 모니터링까지 완전히 종료.
-- 부팅 자동 실행 시에는 `--minimized` 인자로 시작되어 **창 없이 트레이에서 상주**합니다.
-- 상태바의 `🖥 내 PC:` 표시로 내 PC의 모니터링/전송 상태를 실시간 확인할 수 있습니다.
+| 기능 | 설명 |
+|------|------|
+| 백그라운드 모니터링 | 이 PC의 S5D/DDWORKS 실행·작업 현황을 서버로 전송 |
+| 관제 대시보드 | 전체 구역의 접속 현황을 막대그래프/명단으로 표시 |
+| 시스템 트레이 상주 | 창을 닫아도 모니터링 지속, 트레이에서 다시 열기/종료 |
+| 단일 인스턴스 | Windows 뮤텍스로 중복 실행 방지 |
+| 부팅 시 자동 실행 | `--minimized` 인자로 트레이 모드 자동 시작 등록 |
 
 ### 실행
-```bash
+
+```bat
 cd monitor
 pip install -r requirements.txt
-python hanyang_monitor.py            # 창을 띄우고 실행
-python hanyang_monitor.py --minimized  # 트레이에 숨긴 채 백그라운드로 실행
+python hanyang_monitor.py
 ```
 
-### .exe 빌드 (PyInstaller)
-```bash
+트레이 숨김 모드로 실행하려면 아래처럼 실행합니다.
+
+```bat
+python hanyang_monitor.py --minimized
+```
+
+### PyInstaller 빌드
+
+```bat
 cd monitor
 pip install pyinstaller
 pyinstaller --noconsole --onefile --name HanyangMonitor hanyang_monitor.py
-# 결과물: dist/HanyangMonitor.exe
 ```
-> `--noconsole` 로 콘솔 창 없이 트레이/GUI만 표시됩니다.
-> 빌드된 `.exe` 와 같은 폴더에 `viewer_settings.json`, `monitor_debug.log` 가 생성됩니다.
+
+결과물:
+
+```text
+dist/HanyangMonitor.exe
+```
 
 ---
 
-## 🖥 서버: `server/server.py`
+## 서버: `server/server.py`
 
-상태 수집 및 데이터 제공을 담당하는 Flask 서버입니다. (포트 `5000`)
+현재 레포에 포함된 기본 수집 서버입니다.
 
-```bash
+```bat
 cd server
 pip install -r requirements.txt
 python server.py
 ```
 
-- 서버 폴더에 **`사원명부.xlsx`** 가 있어야 인가된 IP를 인식합니다. (아래 형식 참고)
-- 실행 위치와 무관하게 `server.py` 가 있는 폴더를 기준으로 데이터 파일을 읽고 씁니다.
+현재 기본 서버 구조는 다음 파일을 사용합니다.
 
-### 생성/사용 파일 (서버 폴더 기준)
 | 파일 | 설명 |
 |------|------|
-| `사원명부.xlsx` | 인가 IP/사원 정보 원본 (직접 준비) |
+| `사원명부.xlsx` | 인가 IP/사원 정보 원본 |
 | `report_YYYY-MM-DD.csv` | 일자별 수신 로그 |
 | `execution_log.csv` | 프로그램 실행 인가/거부 이력 |
-| `zone_limits.json` | 구역별 접속 제한 인원 (admin이 저장) |
+| `zone_limits.json` | 구역별 접속 제한 인원 |
 
-### 주요 API
-| 메서드 | 경로 | 용도 |
+---
+
+## 주요 API
+
+| Method | Path | 용도 |
 |--------|------|------|
 | POST | `/receive_status` | 모니터가 보내는 프로세스 상태 수신 |
-| GET  | `/api/employees` | 사원명부.xlsx 내려주기 (대시보드용) |
-| GET  | `/api/logs` | 오늘자 리포트 CSV 내려주기 |
+| GET | `/api/employees` | 사원명부 수신 |
+| GET | `/api/logs` | 오늘자 리포트 CSV 수신 |
 | GET/POST | `/api/zone_limits` | 구역별 접속 제한 인원 조회/저장 |
 | POST | `/api/verify_execution` | 범용 프로그램 실행 인가 검증 |
-| GET  | `/api/execution_logs`, `/api/denied_summary` | 실행 인가 로그/거부 요약 |
+| GET | `/api/execution_logs`, `/api/denied_summary` | 실행 인가 로그/거부 요약 |
 
 ---
 
-## 🔒 관리자: `admin/admin.py`
+## 사원명부 형식
 
-구역별 **접속 제한 인원**을 설정해 서버(`zone_limits.json`)에 저장합니다.
-저장하면 모든 대시보드에 자동 반영되어, 제한 초과 구역은 빨간 막대로 강조됩니다.
-
-```bash
-cd admin
-pip install -r requirements.txt
-python admin.py
-```
-
----
-
-## 📋 `사원명부.xlsx` 형식
-
-첫 행은 헤더(`이름`, `IP` …)이며, 다음 열 순서를 따릅니다.
+기본 서버를 사용할 경우 `server/사원명부.xlsx`는 아래 순서를 따릅니다.
 
 | 열 | 내용 | 예시 |
 |----|------|------|
@@ -155,20 +144,22 @@ python admin.py
 
 ---
 
-## ⚙️ 공통 설정
+## 공통 설정
 
-서버 주소와 인증키는 각 파일 상단 상수로 관리합니다. 배포 환경에 맞게 수정하세요.
+서버 주소와 인증키는 각 파일 상단 상수로 관리합니다.
+다운로드 후 수정할 때는 우선 `monitor/hanyang_monitor.py`의 아래 값을 확인하면 됩니다.
 
 ```python
 SERVER_URL = "http://12.26.204.100:5000"
-API_KEY    = "HanyangENG-Monitor-2026!"
+API_KEY = "HanyangENG-Monitor-2026!"
 ```
 
-- `monitor/hanyang_monitor.py`, `server/server.py`, `admin/admin.py` 의 `API_KEY` 는 **모두 동일**해야 합니다.
-- 모니터의 감지 대상 프로세스는 `TARGET_PROCESSES`, 구역 구성은 `REGION_CONFIG` 에서 조정합니다.
+`SERVER_URL`은 운영 서버 주소에 맞게 수정해야 합니다.
 
 ---
 
-## 🔐 보안 참고
-- API 키와 서버 IP가 소스에 하드코딩되어 있습니다. 실제 운영 시에는 환경변수/설정파일로 분리하는 것을 권장합니다.
-- 런타임 생성 데이터(`report_*.csv`, `사원명부.xlsx`, 각종 로그/설정)는 `.gitignore` 로 저장소에서 제외됩니다.
+## Git 관리 기준
+
+- 운영/수정 기준은 `monitor/hanyang_monitor.py`입니다.
+- 구버전 `Client.py`, `viewer_v4.py`, `legacy/` 폴더는 삭제되었습니다.
+- 런타임 생성 데이터(`report_*.csv`, `사원명부.xlsx`, 로그, 설정 파일)는 `.gitignore`로 저장소에서 제외합니다.
