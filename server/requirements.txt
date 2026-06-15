@@ -1,0 +1,5 @@
+# 한양이엔지 관제 수집 서버 의존성
+# 사원명부.xlsx 읽기에 xlwings를 사용하므로 Windows + Excel 설치 환경에서 실행하세요.
+flask
+waitress
+xlwings

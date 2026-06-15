@@ -1,8 +1,27 @@
+# -*- coding: utf-8 -*-
+"""
+한양이엔지 통합 관제 프로그램 (Monitor + Viewer)
+=================================================
+하나의 독립 실행 프로그램으로 다음 두 기능을 동시에 수행합니다.
+
+1. [백그라운드 모니터링 — 구 Client.py]
+   이 PC에서 S5D / DDWORKS 실행 현황을 감지해 관제 서버로 주기적으로 전송합니다.
+
+2. [관제 대시보드 — 구 viewer_v4.py]
+   전체 구역의 실시간 접속 현황을 차트/명단으로 보여줍니다.
+
+· 시스템 트레이에 상주하며, 창을 닫아도 백그라운드 모니터링은 계속됩니다.
+· 중복 실행 방지(단일 인스턴스) 및 Windows 부팅 시 자동 실행(트레이 모드)을 지원합니다.
+"""
+
 import tkinter as tk
 from tkinter import ttk
 import csv
 import json
 import time
+import socket
+import threading
+import logging
 import requests
 import xlwings as xw
 import os
@@ -17,11 +36,40 @@ from tkinter import filedialog
 from datetime import datetime
 from tkinter import scrolledtext
 
+# 💡 백그라운드 모니터링(구 Client.py)에 필요한 모듈
+import psutil
+import ctypes
+from PIL import Image, ImageDraw
+import pystray
+
+# 💡 Windows 전용 모듈은 플랫폼 가드 (다른 OS에서도 import만은 가능하도록)
+IS_WINDOWS = (os.name == 'nt')
+if IS_WINDOWS:
+    import winreg
+
 # ==========================================
 # 🔧 [설정] 서버 및 프로그램 정보
 # ==========================================
 SERVER_URL = "http://12.26.204.100:5000"
 API_KEY = "HanyangENG-Monitor-2026!"
+
+# ==========================================
+# 🔧 [설정] 백그라운드 모니터링 (구 Client.py)
+# ==========================================
+# 💡 모니터링 결과를 전송할 서버 엔드포인트
+STATUS_REPORT_URL = f"{SERVER_URL}/receive_status"
+# 💡 감지 대상 프로세스 (S5D, DDWORKS)
+TARGET_PROCESSES = ["S5D.exe", "dinno.hu3d.wpf.hookupdesigner.exe"]
+# 💡 상태 전송 주기 (초)
+CHECK_INTERVAL = 10
+# 💡 Windows 시작프로그램 등록 이름
+AUTOSTART_NAME = "HanyangENG_Monitor"
+# 💡 단일 인스턴스 보장용 뮤텍스 이름
+MUTEX_NAME = "HanyangENG_Monitor_Unified_Mutex"
+# 💡 S5D 시작 후 창 제목 조회 유예시간 (초) — Tiara 보안 모듈 초기화 회피
+S5D_STARTUP_GRACE_SEC = 15
+# 💡 트레이 모드(부팅 자동 실행)로 시작할 때의 커맨드라인 인자
+TRAY_START_FLAG = "--minimized"
 
 # 💡 프로세스 파일명 → 표시 이름
 # ─ 클라이언트 TARGET_PROCESSES 와 동일하게 맞춰주세요
@@ -89,7 +137,13 @@ def _get_app_dir():
         # 일반 Python 스크립트 실행 시
         return os.path.dirname(os.path.abspath(__file__))
 
-SETTINGS_FILE = os.path.join(_get_app_dir(), "viewer_settings.json")
+APP_DIR = _get_app_dir()
+SETTINGS_FILE = os.path.join(APP_DIR, "viewer_settings.json")
+# 💡 백그라운드 모니터링 디버그 로그 (.exe와 같은 폴더)
+LOG_FILE = os.path.join(APP_DIR, "monitor_debug.log")
+# 💡 서버에서 내려받는 임시 파일도 쓰기 가능한 APP_DIR에 생성
+TEMP_EMP_FILE = os.path.join(APP_DIR, "temp_emp.xlsx")
+TEMP_LOG_FILE = os.path.join(APP_DIR, "temp_logs.csv")
 
 def get_display_name(zone_name):
     """내부 구역명 → 화면 표시명 변환
@@ -119,6 +173,297 @@ def load_settings():
 def save_settings(settings):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+# ==========================================================
+# 🖥 백그라운드 모니터링 에이전트 (구 Client.py)
+#   이 PC의 S5D / DDWORKS 실행 현황을 감지해 서버로 전송한다.
+# ==========================================================
+class MonitoringAgent:
+    def __init__(self, log_callback=None):
+        self.stop_event = threading.Event()
+        self.failed_queue = []
+        self._process_first_seen = {}     # {proc_name: 최초 감지 timestamp}
+        self._log_callback = log_callback  # 뷰어 디버그 로그로 전달할 콜백
+        self.thread = None
+
+        # 💡 GUI 표시용 상태 요약
+        self.summary = "준비 중…"
+        self.summary_color = "#555555"
+
+    # ── 로그 (콘솔 + 파일 + 뷰어 디버그 창) ──
+    def log(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] [모니터] {msg}"
+        print(line)
+        try:
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+        if self._log_callback:
+            try:
+                self._log_callback(line)
+            except Exception:
+                pass
+
+    # ── 네트워크 / 프로세스 ──
+    def get_local_ip(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return socket.gethostbyname(socket.gethostname())
+
+    def is_process_running(self, process_name):
+        """프로세스 실행 여부만 가볍게 확인 (창 제목은 읽지 않음)"""
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return False
+
+    def get_detailed_window_title(self, process_name):
+        """프로세스의 보이는 창 제목들을 ' / '로 이어 반환 (Windows 전용)"""
+        if not IS_WINDOWS:
+            return None
+
+        target_pids = []
+        for proc in psutil.process_iter(['name', 'pid']):
+            try:
+                if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
+                    target_pids.append(proc.info['pid'])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        if not target_pids:
+            return None
+
+        EnumWindows = ctypes.windll.user32.EnumWindows
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+        GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
+        GetWindowText = ctypes.windll.user32.GetWindowTextW
+        GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
+        IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+
+        found_titles = []
+
+        def foreach_window(hwnd, lParam):
+            if IsWindowVisible(hwnd):
+                pid = ctypes.c_ulong()
+                GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value in target_pids:
+                    length = GetWindowTextLength(hwnd)
+                    if length > 0:
+                        buff = ctypes.create_unicode_buffer(length + 1)
+                        GetWindowText(hwnd, buff, length + 1)
+                        found_titles.append(buff.value)
+            return True
+
+        EnumWindows(EnumWindowsProc(foreach_window), 0)
+        return " / ".join(found_titles) if found_titles else "창 제목 없음 (백그라운드)"
+
+    # ── 상태 수집 + 서버 전송 ──
+    def send_status(self):
+        hostname = socket.gethostname()
+        ip_address = self.get_local_ip()
+        now_ts = time.time()
+        running_map = {}
+
+        for proc_name in TARGET_PROCESSES:
+            # 1단계: 실행 여부만 먼저 확인 (가벼운 체크)
+            running = self.is_process_running(proc_name)
+            running_map[proc_name] = running
+
+            if not running:
+                if proc_name in self._process_first_seen:
+                    del self._process_first_seen[proc_name]
+                    self.log(f"{proc_name} 종료 감지")
+                self.failed_queue.append({
+                    "ip": ip_address, "hostname": hostname,
+                    "process_name": proc_name, "is_running": False, "details": ""
+                })
+                continue
+
+            # 실행 중 → 최초 감지 시각 기록
+            if proc_name not in self._process_first_seen:
+                self._process_first_seen[proc_name] = now_ts
+                self.log(f"{proc_name} 새로 감지 — {S5D_STARTUP_GRACE_SEC}초 유예 후 창 제목 조회")
+
+            # 2단계: S5D는 시작 후 유예시간 동안 창 제목 조회 스킵 (Tiara 보안 모듈 회피)
+            elapsed = now_ts - self._process_first_seen[proc_name]
+            if proc_name.lower() == "s5d.exe" and elapsed < S5D_STARTUP_GRACE_SEC:
+                self.failed_queue.append({
+                    "ip": ip_address, "hostname": hostname,
+                    "process_name": proc_name, "is_running": True,
+                    "details": f"초기화 대기 중 ({int(S5D_STARTUP_GRACE_SEC - elapsed)}초)"
+                })
+                continue
+
+            # 3단계: 유예 완료 → 창 제목 조회
+            window_details = self.get_detailed_window_title(proc_name)
+
+            # 4단계: DDWORKS는 Hookup Designer 창([구역명])이 열려야 유효
+            if proc_name.lower() == "dinno.hu3d.wpf.hookupdesigner.exe":
+                if not window_details or "[" not in window_details:
+                    self.failed_queue.append({
+                        "ip": ip_address, "hostname": hostname,
+                        "process_name": proc_name, "is_running": False, "details": ""
+                    })
+                    continue
+
+            self.failed_queue.append({
+                "ip": ip_address, "hostname": hostname,
+                "process_name": proc_name, "is_running": True,
+                "details": window_details if window_details else "창 제목 없음"
+            })
+
+        # ── 큐 전송 (실패분은 다시 큐에 남김, 최대 50건) ──
+        remaining_queue = []
+        send_failed = False
+        headers = {"X-API-Key": API_KEY}
+
+        for p in self.failed_queue:
+            try:
+                res = requests.post(STATUS_REPORT_URL, json=p, headers=headers,
+                                    timeout=5, proxies={"http": None, "https": None})
+                if res.status_code == 403:
+                    self.log("서버에서 미인가 거부 (403) — 데이터 폐기")
+                elif res.status_code != 200:
+                    remaining_queue.append(p)
+                    send_failed = True
+            except requests.exceptions.RequestException:
+                remaining_queue.append(p)
+                send_failed = True
+
+        self.failed_queue = remaining_queue[-50:]
+        self._update_summary(running_map, send_failed)
+
+    def _update_summary(self, running_map, send_failed):
+        """GUI 상태바에 표시할 요약 문자열 갱신"""
+        parts = []
+        for proc_name in TARGET_PROCESSES:
+            disp = PROGRAMS_MAP.get(proc_name.lower(), proc_name)
+            mark = "●" if running_map.get(proc_name) else "○"
+            parts.append(f"{disp} {mark}")
+        status_str = "  ".join(parts)
+        if send_failed:
+            self.summary = f"{status_str}   · 서버 전송 지연 (재시도 중)"
+            self.summary_color = "#F44336"
+        else:
+            self.summary = f"{status_str}   · 전송 정상"
+            self.summary_color = "#2E7D32"
+
+    # ── 스레드 루프 ──
+    def _loop(self):
+        self.log("모니터링 스레드 시작")
+        while not self.stop_event.is_set():
+            try:
+                self.send_status()
+            except Exception as e:
+                self.log(f"send_status 오류: {e}")
+            for _ in range(CHECK_INTERVAL):
+                if self.stop_event.is_set():
+                    break
+                time.sleep(1)
+        self.log("모니터링 스레드 종료")
+
+    def start(self):
+        if self.thread and self.thread.is_alive():
+            return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+
+
+# ==========================================================
+# 🔧 단일 인스턴스 / 자동 실행 / 트레이 (구 Client.py)
+# ==========================================================
+_mutex_handle = None
+
+def acquire_single_instance():
+    """중복 실행 방지. 이미 실행 중이면 안내 후 False 반환."""
+    global _mutex_handle
+    if not IS_WINDOWS:
+        return True  # 비 Windows에서는 단일 인스턴스 검사 생략
+    try:
+        _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "관제 프로그램이 이미 실행 중입니다!\n(우측 하단 숨겨진 아이콘 영역을 확인하세요.)",
+                "실행 안내", 0x30  # MB_ICONWARNING
+            )
+            return False
+    except Exception:
+        pass
+    return True
+
+def get_executable_path():
+    if getattr(sys, 'frozen', False):
+        return f'"{sys.executable}"'
+    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+def register_autostart():
+    """Windows 부팅 시 트레이 모드로 자동 실행되도록 등록"""
+    if not IS_WINDOWS:
+        return
+    try:
+        exe_path = f"{get_executable_path()} {TRAY_START_FLAG}"
+        reg_key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_READ | winreg.KEY_WRITE
+        )
+        try:
+            current_val, _ = winreg.QueryValueEx(reg_key, AUTOSTART_NAME)
+            if current_val == exe_path:
+                winreg.CloseKey(reg_key)
+                return
+        except FileNotFoundError:
+            pass
+        winreg.SetValueEx(reg_key, AUTOSTART_NAME, 0, winreg.REG_SZ, exe_path)
+        winreg.CloseKey(reg_key)
+    except Exception as e:
+        print(f"[자동 시작 등록 실패 — 무시됨] {e}")
+
+def create_tray_image():
+    image = Image.new('RGBA', (64, 64), color=(0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((4, 4, 60, 60), fill="#00479A", outline="white", width=3)
+    return image
+
+def build_tray_icon(viewer):
+    """뷰어와 연결된 시스템 트레이 아이콘 생성.
+    모든 콜백은 root.after(0, ...)로 tkinter 메인 스레드에서 실행한다."""
+    def on_open(icon, item):
+        viewer.root.after(0, viewer.show_window)
+
+    def on_refresh(icon, item):
+        viewer.root.after(0, viewer.manual_refresh)
+
+    def on_debug(icon, item):
+        viewer.root.after(0, viewer.open_debug_window)
+
+    def on_quit(icon, item):
+        viewer.root.after(0, viewer.real_quit)
+
+    menu = pystray.Menu(
+        pystray.MenuItem('📊 관제 화면 열기', on_open, default=True),
+        pystray.MenuItem('🔄 지금 갱신', on_refresh),
+        pystray.MenuItem('🔍 디버그 로그', on_debug),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem('❌ 완전 종료', on_quit),
+    )
+    return pystray.Icon("HanyangMonitor", create_tray_image(), "한양이엔지 통합 관제", menu)
 
 # ==========================================
 
@@ -182,9 +527,17 @@ class MonitorViewer:
 
         self.settings = load_settings()
         self._update_job = None  # 💡 자동 갱신 타이머 ID
+
+        # 💡 백그라운드 모니터링 / 트레이 연동 상태
+        self.agent = None             # MonitoringAgent (main()에서 주입)
+        self.tray_icon = None         # pystray Icon (main()에서 주입)
+        self._quitting = False        # 완전 종료 진행 중 여부
+        self._tray_notified = False   # 트레이 최초 안내 표시 여부
+
         self.setup_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)  # 💡 종료 시 정리
         self.root.after(500, self.auto_connect_and_start)
+        self.root.after(2000, self._poll_agent_status)  # 💡 내 PC 모니터링 상태 폴링
 
     def debug_log(self, msg):
         """콘솔 + 메모리에 로그 기록"""
@@ -194,6 +547,94 @@ class MonitorViewer:
         self.debug_logs.append(line)
         if len(self.debug_logs) > 500:
             self.debug_logs.pop(0)
+
+    def add_log_line(self, line):
+        """💡 외부(모니터링 스레드)에서 이미 포맷된 로그 줄을 디버그 로그에 추가"""
+        self.debug_logs.append(line)
+        if len(self.debug_logs) > 500:
+            self.debug_logs.pop(0)
+
+    # ==========================================
+    # 🔗 백그라운드 모니터링 / 트레이 연동
+    # ==========================================
+    def attach_agent(self, agent):
+        self.agent = agent
+
+    def attach_tray(self, tray_icon):
+        self.tray_icon = tray_icon
+
+    def _poll_agent_status(self):
+        """내 PC 모니터링 상태를 상태바에 주기적으로 표시"""
+        if self._quitting:
+            return
+        if self.agent is not None and hasattr(self, "lbl_monitor"):
+            self.lbl_monitor.config(
+                text=f"🖥 내 PC: {self.agent.summary}",
+                fg=self.agent.summary_color,
+            )
+        self.root.after(3000, self._poll_agent_status)
+
+    def show_window(self):
+        """트레이에서 다시 창 열기"""
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def hide_to_tray(self):
+        """창을 트레이로 숨김 (백그라운드 모니터링은 계속)"""
+        try:
+            self.root.withdraw()
+        except Exception:
+            pass
+        if self.tray_icon is not None and not self._tray_notified:
+            self._tray_notified = True
+            try:
+                self.tray_icon.notify(
+                    "백그라운드에서 모니터링을 계속합니다.\n트레이 아이콘을 더블클릭하면 다시 열립니다.",
+                    "한양이엔지 통합 관제",
+                )
+            except Exception:
+                pass
+
+    def real_quit(self):
+        """프로그램 완전 종료 (모니터링 + 트레이 + GUI 정리)"""
+        self._quitting = True
+
+        # 자동 갱신 타이머 취소
+        if self._update_job:
+            try:
+                self.root.after_cancel(self._update_job)
+            except Exception:
+                pass
+            self._update_job = None
+
+        # 백그라운드 모니터링 종료
+        if self.agent is not None:
+            try:
+                self.agent.stop()
+            except Exception:
+                pass
+
+        # 트레이 아이콘 종료
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+
+        # matplotlib 정리
+        try:
+            plt.close(self.fig)
+        except Exception:
+            pass
+
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     # ==========================================
     # UI 구성
@@ -225,6 +666,12 @@ class MonitorViewer:
                                     font=("맑은 고딕", 10, "bold"),
                                     bg=self.colors["secondary"], fg=self.colors["primary"])
         self.lbl_status.pack(side=tk.LEFT, padx=10)
+
+        # 💡 내 PC 백그라운드 모니터링 상태 (구 Client.py 기능)
+        self.lbl_monitor = tk.Label(frame_status, text="🖥 내 PC: 모니터링 준비 중…",
+                                     font=("맑은 고딕", 9),
+                                     bg=self.colors["secondary"], fg="#555555")
+        self.lbl_monitor.pack(side=tk.LEFT, padx=(0, 10))
 
         self.lbl_time = tk.Label(frame_status, text="마지막 갱신: 대기 중",
                                   font=("맑은 고딕", 9),
@@ -1282,9 +1729,9 @@ class MonitorViewer:
                                timeout=5, proxies={"http": None, "https": None})
 
             if res.status_code == 200:
-                with open("temp_emp.xlsx", "wb") as f:
+                with open(TEMP_EMP_FILE, "wb") as f:
                     f.write(res.content)
-                self.parse_employee_file("temp_emp.xlsx")
+                self.parse_employee_file(TEMP_EMP_FILE)
                 self.fetch_zone_limits()  # 💡 서버에서 접속 제한 인원 받아오기
                 self.debug_log(f"서버 연동 완료: IP {len(self.emp_by_ip)}건, PC {len(self.emp_by_pc)}건, 사원정보 {len(self.emp_info)}건")
                 self.lbl_status.config(text="🟢 서버 연동 완료 (실시간 관제 중)", fg=self.colors["status_online"])
@@ -1362,10 +1809,10 @@ class MonitorViewer:
                                timeout=5, proxies={"http": None, "https": None})
 
             if res.status_code == 200:
-                with open("temp_logs.csv", "wb") as f:
+                with open(TEMP_LOG_FILE, "wb") as f:
                     f.write(res.content)
 
-                self.parse_log_file("temp_logs.csv")
+                self.parse_log_file(TEMP_LOG_FILE)
                 self.fetch_zone_limits()
                 self.refresh_chart()
 
@@ -1813,22 +2260,78 @@ class MonitorViewer:
     # 🚪 종료 시 정리
     # ==========================================
     def on_close(self):
-        """💡 창 닫을 때 matplotlib, 타이머 등 정리 후 종료"""
-        # 자동 갱신 타이머 취소
-        if self._update_job:
-            self.root.after_cancel(self._update_job)
-            self._update_job = None
+        """💡 창의 X 버튼 → 트레이로 숨김 (백그라운드 모니터링은 계속).
+        트레이가 없으면(예: 트레이 생성 실패) 곧바로 완전 종료한다."""
+        if self.tray_icon is not None and not self._quitting:
+            self.hide_to_tray()
+        else:
+            self.real_quit()
 
-        # matplotlib 정리
-        try:
-            plt.close(self.fig)
-        except:
-            pass
 
-        self.root.destroy()
+# ==========================================================
+# 🚀 통합 실행 진입점
+# ==========================================================
+def main():
+    # 💡 트레이 모드(부팅 자동 실행)로 시작했는지 확인
+    start_minimized = (TRAY_START_FLAG in sys.argv)
+
+    # 💡 작업 디렉터리를 앱 폴더로 고정 (설정/로그/임시파일 경로 안정화)
+    try:
+        os.chdir(APP_DIR)
+    except Exception:
+        pass
+
+    # 💡 1) 중복 실행 방지
+    if not acquire_single_instance():
+        sys.exit(0)
+
+    # 💡 2) Windows 부팅 시 자동 실행(트레이 모드) 등록
+    register_autostart()
+
+    # 💡 3) 뷰어 GUI 생성
+    root = tk.Tk()
+    viewer = MonitorViewer(root)
+
+    # 💡 4) 백그라운드 모니터링 에이전트 시작 (로그는 디버그 창으로도 전달)
+    agent = MonitoringAgent(log_callback=viewer.add_log_line)
+    viewer.attach_agent(agent)
+    agent.start()
+
+    # 💡 5) 시스템 트레이 아이콘을 별도 스레드에서 실행
+    #     (tkinter는 메인 스레드, pystray는 워커 스레드 — Windows에서 안전)
+    tray_icon = None
+    try:
+        tray_icon = build_tray_icon(viewer)
+        viewer.attach_tray(tray_icon)
+        threading.Thread(target=tray_icon.run, daemon=True).start()
+    except Exception as e:
+        print(f"[트레이 생성 실패 — 트레이 없이 실행] {e}")
+
+    # 💡 6) 트레이 모드로 시작했다면 창을 숨긴 채 백그라운드 상주
+    if start_minimized and tray_icon is not None:
+        root.after(100, root.withdraw)
+
+    # 💡 7) 메인 루프
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        viewer.real_quit()
+    finally:
+        agent.stop()
+        if tray_icon is not None:
+            try:
+                tray_icon.stop()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = MonitorViewer(root)
-    root.mainloop()
+    try:
+        main()
+    except Exception:
+        logging.basicConfig(
+            filename=os.path.join(APP_DIR, "monitor_error.log"),
+            level=logging.ERROR,
+        )
+        logging.error("치명적 오류", exc_info=True)
+        raise

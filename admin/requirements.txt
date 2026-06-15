@@ -1,0 +1,2 @@
+# 한양이엔지 관리자 설정 프로그램 의존성 (tkinter는 Python 기본 포함)
+requests
