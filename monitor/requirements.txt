@@ -1,0 +1,11 @@
+# 한양이엔지 통합 관제 프로그램 (Monitor + Viewer) 의존성
+# Windows 환경에서 실행/빌드하세요. (tkinter는 Python 기본 포함)
+requests
+psutil
+pystray
+Pillow
+matplotlib
+xlwings
+
+# .exe 빌드용 (선택)
+# pyinstaller

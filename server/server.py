@@ -386,6 +386,13 @@ def set_zone_limits():
         return jsonify({"message": f"저장 오류: {str(e)}"}), 500
 
 if __name__ == '__main__':
+    # 💡 데이터 파일(사원명부/리포트/로그)을 server.py와 같은 폴더 기준으로 처리
+    #    (어느 위치에서 실행하든 경로가 일관되도록 작업 디렉터리 고정)
+    try:
+        os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        pass
+
     # 💡 [Phase 2] 서버 시작 시 사원명부에서 인가 IP 로드
     load_authorized_ips()
     print("🚀 실무용 무중단 수집 서버가 가동되었습니다... (포트: 5000)")

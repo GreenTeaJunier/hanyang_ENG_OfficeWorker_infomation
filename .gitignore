@@ -1,0 +1,40 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ===== PyInstaller 빌드 산출물 =====
+build/
+dist/
+*.spec
+
+# ===== 런타임 생성 데이터 (서버) =====
+server/report_*.csv
+server/execution_log.csv
+server/zone_limits.json
+server/사원명부.xlsx
+
+# ===== 런타임 생성 데이터 (모니터/뷰어) =====
+monitor/viewer_settings.json
+monitor/monitor_debug.log
+monitor/monitor_error.log
+monitor/temp_emp.xlsx
+monitor/temp_logs.csv
+monitor/*.xlsx
+
+# 구버전 클라이언트가 남기던 로그 (혹시 남아있다면)
+client_debug.log
+client_error.log
+
+# ===== 현황 내려받기 산출물(엑셀) =====
+*_현황_*.xlsx
+접속현황_*.xlsx
+
+# ===== OS / 에디터 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
