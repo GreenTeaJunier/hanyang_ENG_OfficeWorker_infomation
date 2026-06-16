@@ -1,0 +1,7 @@
+{
+  "collector_url": "http://SERVER_IP:9000",
+  "agent_token": "NMS 서버에서 register_agent 로 발급받은 원본 토큰을 여기에 붙여넣기",
+  "agent_id": "",
+  "collect_interval_sec": 30,
+  "verify_tls": true
+}

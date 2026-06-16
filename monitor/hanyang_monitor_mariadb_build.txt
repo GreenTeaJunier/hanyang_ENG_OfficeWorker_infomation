@@ -22,3 +22,36 @@
 기본값:
 
     http://12.26.204.100:8080
+
+
+NMS(평택 5D 관제) 콜렉터 연동 — run_collector.py 가 이 PC를 탐지하게 하기
+========================================================================
+
+이 모니터는 실행되면 hanyang-eng 리포의 NMS 콜렉터
+(nms_system/run_collector.py, 기본 9000포트)로 heartbeat/ingest 를 주기적으로
+보내, 콜렉터가 이 PC를 살아있는 노드로 '탐지'하게 할 수 있습니다.
+설정이 없으면 자동으로 비활성화되어 기존 동작에는 전혀 영향이 없습니다.
+
+1) NMS 서버에서 이 PC를 1회 등록해 토큰을 발급받습니다.
+
+    (NMS 서버, monitoring 폴더에서)
+    python -m tools.register_agent --hostname PC이름 --ip 192.168.0.11 --dept 설계팀 --name 홍길동
+
+2) 직원 PC에서 둘 중 하나로 설정합니다.
+
+   (a) 환경변수
+       NMS_COLLECTOR_URL = http://서버IP:9000
+       NMS_AGENT_TOKEN   = 위에서 발급받은 원본 토큰
+
+   (b) EXE(또는 .py) 와 같은 폴더에 nms_agent_config.json 생성
+       양식은 nms_agent_config.example.json 참고
+
+선택 설정:
+
+    NMS_AGENT_ID         미지정 시 PC hostname 사용
+    NMS_COLLECT_INTERVAL 보고 주기(초, 기본 30)
+    NMS_VERIFY_TLS       TLS 검증(기본 true, 평문 http면 무관)
+
+설정 후 모니터를 실행하면 NMS 대시보드(기본 9080)에서 이 PC가
+'HanyangMonitor' 노드로 보입니다. 401/403 이 뜨면 등록 여부·토큰·
+화이트리스트 IP를 확인하세요.
