@@ -3,25 +3,29 @@
 한양이엔지 통합 관제 프로그램 - MariaDB JSON 전환 실행 파일
 
 이 파일은 기존 monitor/hanyang_monitor.py 원본을 직접 뜯어고치지 않고,
-실행 시점에 아래 세 가지만 패치해서 실행합니다.
+실행 시점에 아래 기능만 패치해서 실행합니다.
 
 1. SERVER_URL / STATUS_REPORT_URL을 HYserver 8080 기준으로 변경
 2. /api/employees 응답을 Excel 파일이 아니라 JSON으로 파싱
-3. NMS(평택 5D 관제) 콜렉터 연동 — hanyang-eng 리포의
-   nms_system/run_collector.py 가 이 PC를 살아있는 노드로 '탐지'하도록
-   push-only heartbeat/ingest 를 주기적으로 전송 (설정 시에만 동작)
+3. NMS(평택 5D 관제) 콜렉터 연동
+   - heartbeat: agent.last_seen 갱신용
+   - ingest: CPU/RAM/디스크/네트워크/프로세스/최근 로그 적재용
+   - MariaDB NOW() 기준과 맞추기 위해 NMS 전송 timestamp는 로컬 시간(naive ISO) 사용
 
 직원 PC에 배포할 때는 이 파일을 PyInstaller로 패키징하세요.
 """
 
-import os
-import sys
-import json
-import socket
+from __future__ import annotations
+
 import hashlib
+import json
 import logging
+import os
+import socket
+import sys
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
+from pathlib import Path
 
 import psutil
 
@@ -108,9 +112,13 @@ def auto_connect_and_start_json(self):
             self.parse_employee_payload(payload)
             self.fetch_zone_limits()
             self.debug_log(
-                f"서버 연동 완료(JSON): IP {len(self.emp_by_ip)}건, PC {len(self.emp_by_pc)}건, 사원정보 {len(self.emp_info)}건"
+                f"서버 연동 완료(JSON): IP {len(self.emp_by_ip)}건, "
+                f"PC {len(self.emp_by_pc)}건, 사원정보 {len(self.emp_info)}건"
             )
-            self.lbl_status.config(text="🟢 서버 연동 완료 (MariaDB JSON / 실시간 관제 중)", fg=self.colors["status_online"])
+            self.lbl_status.config(
+                text="🟢 서버 연동 완료 (MariaDB JSON / 실시간 관제 중)",
+                fg=self.colors["status_online"],
+            )
 
             default_region = self.settings.get("default_region", "__favorites__")
             if default_region == "__favorites__":
@@ -136,13 +144,8 @@ hm.MonitorViewer.auto_connect_and_start = auto_connect_and_start_json
 
 
 # ============================================================
-# 4. NMS(평택 5D 관제) 콜렉터 연동 — run_collector.py가 이 PC를 탐지
+# 4. NMS(평택 5D 관제) 콜렉터 연동
 # ============================================================
-# hanyang-eng 리포의 NMS 콜렉터(nms_system/run_collector.py → 실제 본체는
-# Pyeongtaek_5D_Site_Server/monitoring/collector, 기본 9000포트)는 "에이전트가
-# 항상 먼저 접속(push-only)" 하는 구조입니다. 이 모니터를 경량 NMS 에이전트처럼
-# 동작시켜, 콜렉터가 이 PC를 살아있는 노드로 '탐지'하도록 합니다.
-#
 # 전송 규약(monitoring/common/models.py 기준):
 #   POST /api/v1/heartbeat : {agent_id, hostname, ip, ts, agent_version, agent_hash}
 #   POST /api/v1/ingest    : {agent_id, hostname, ip, sent_at, metrics[], processes[], logs[]}
@@ -150,31 +153,23 @@ hm.MonitorViewer.auto_connect_and_start = auto_connect_and_start_json
 #
 # 설정(우선순위: 환경변수 > nms_agent_config.json > 비활성):
 #   NMS_COLLECTOR_URL    예) http://12.26.204.100:9000
-#   NMS_AGENT_TOKEN      NMS 서버에서 register_agent 로 발급한 '원본 토큰'
+#   NMS_AGENT_TOKEN      NMS 서버에서 발급한 '원본 토큰'
 #   NMS_AGENT_ID         미지정 시 hostname 사용
 #   NMS_COLLECT_INTERVAL 보고 주기(초, 기본 30)
 #   NMS_VERIFY_TLS       TLS 검증 여부(기본 true, 평문 http면 무관)
 #
-#   ※ URL과 토큰이 모두 설정돼 있을 때만 동작합니다. 미설정이면 조용히
-#     비활성화되어 기존 모니터 동작에는 전혀 영향을 주지 않습니다.
-#   ※ 콜렉터가 200으로 받으려면 이 PC가 NMS 서버에 1회 등록돼 있어야 합니다
-#     (python -m tools.register_agent ...). 미등록/토큰불일치면 401·403을 받습니다.
+# ※ MariaDB/Dashboard가 NOW() 기준으로 조회하므로 ts/sent_at은 UTC가 아니라 로컬 시간으로 보냅니다.
+# ※ URL과 토큰이 모두 설정돼 있을 때만 동작합니다.
 
-NMS_AGENT_VERSION = "hanyang-monitor-mariadb/1.0"
-# NMS 프로세스 목록에서 이 모니터를 항상 같은 이름으로 식별하기 위한 라벨
+NMS_AGENT_VERSION = "hanyang-monitor-mariadb/1.1"
 NMS_PROCESS_LABEL = "HanyangMonitor"
 NMS_CONFIG_FILE = os.path.join(hm.APP_DIR, "nms_agent_config.json")
 
 
 def _load_nms_config() -> dict:
-    """NMS 연동 설정을 환경변수 > nms_agent_config.json 순으로 읽어 반환합니다.
-
-    반환 dict 키: collector_url, agent_token, agent_id, hostname, interval_sec,
-    verify_tls. collector_url 또는 agent_token 이 비어 있으면 연동 비활성으로 봅니다.
-    """
+    """NMS 연동 설정을 환경변수 > nms_agent_config.json 순으로 읽어 반환합니다."""
     file_conf: dict = {}
     try:
-        # utf-8-sig: Windows 메모장이 붙이는 BOM 을 안전하게 처리
         with open(NMS_CONFIG_FILE, encoding="utf-8-sig") as f:
             loaded = json.load(f)
             if isinstance(loaded, dict):
@@ -208,22 +203,17 @@ def _load_nms_config() -> dict:
 
 
 class NmsReporter:
-    """이 모니터 PC를 NMS 콜렉터에 push-only 로 보고하는 경량 에이전트.
-
-    별도 데몬 스레드에서 동작하며 주기적으로 heartbeat 와 (메트릭 + 프로세스)
-    배치를 콜렉터로 전송합니다. tkinter GUI 와 독립적으로 돌고, 어떤 예외도
-    모니터 본체 동작에 영향을 주지 않도록 모두 흡수합니다.
-    """
+    """이 모니터 PC를 NMS 콜렉터에 push-only 로 보고하는 경량 에이전트."""
 
     def __init__(self, config: dict, log_callback=None) -> None:
         self._cfg = config
         self._log = log_callback or (lambda msg: None)
         self._stop = threading.Event()
         self._thread = None
-        # 디스크/네트워크 카운터는 누적값이므로 직전 샘플을 보관해 델타(KB/s)를 구한다.
         self._last_disk = None
         self._last_net = None
         self._last_ts = None
+        self._sent_log_keys: set[str] = set()
 
     # ── 공개 API ──
     def start(self) -> None:
@@ -249,7 +239,7 @@ class NmsReporter:
             psutil.cpu_percent(interval=None)
             self._last_disk = psutil.disk_io_counters()
             self._last_net = psutil.net_io_counters()
-            self._last_ts = datetime.now(timezone.utc)
+            self._last_ts = datetime.now()
         except Exception:
             pass
 
@@ -276,11 +266,15 @@ class NmsReporter:
             verify=self._cfg["verify_tls"],
             proxies={"http": None, "https": None},
         )
+
         if res.status_code in (401, 403):
             self._log(
                 f"[NMS] {path} 인증 거부(HTTP {res.status_code}). "
                 "이 PC의 NMS 등록 여부·토큰·화이트리스트 IP를 확인하세요."
             )
+        elif not (200 <= res.status_code < 300):
+            body = (res.text or "").replace("\n", " ")[:500]
+            self._log(f"[NMS] {path} 전송 실패(HTTP {res.status_code}): {body}")
         return res.status_code
 
     def _send_heartbeat(self, agent_hash: str) -> None:
@@ -301,13 +295,13 @@ class NmsReporter:
             "sent_at": self._now_iso(),
             "metrics": self._collect_metrics(),
             "processes": self._collect_processes(),
-            "logs": [],
+            "logs": self._collect_logs(),
         })
 
     # ── 수집 (monitoring/agent/collectors.py 와 동일한 와이어 스키마) ──
     def _collect_metrics(self) -> list:
         """CPU/RAM 사용률과 직전 호출 이후의 디스크/네트워크 처리량(KB/s)을 한 건 샘플링."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         try:
             cpu_pct = psutil.cpu_percent(interval=None)
             mem = psutil.virtual_memory()
@@ -382,10 +376,51 @@ class NmsReporter:
 
         return samples
 
+    def _collect_logs(self) -> list:
+        """최근 monitor_debug.log 일부를 NMS app_log 로 전송합니다.
+
+        기존 클라이언트는 logs=[]만 보내서 NMS 최근 로그가 비어 있었다.
+        여기서는 마지막 80줄 중 아직 보낸 적 없는 줄만 최대 20건 전송한다.
+        """
+        log_path = Path(getattr(hm, "LOG_FILE", "") or "")
+        if not log_path.exists():
+            return []
+
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+        except Exception:
+            return []
+
+        rows = []
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            key = hashlib.sha1(line.encode("utf-8", errors="ignore")).hexdigest()
+            if key in self._sent_log_keys:
+                continue
+            self._sent_log_keys.add(key)
+            level = "ERROR" if any(word in line.upper() for word in ("ERROR", "실패", "예외", "거부")) else "INFO"
+            rows.append({
+                "ts": self._now_iso(),
+                "level": level,
+                "source": "HanyangMonitor",
+                "message": line[:1000],
+            })
+            if len(rows) >= 20:
+                break
+
+        # 장시간 실행 시 set 무한 증가 방지
+        if len(self._sent_log_keys) > 1000:
+            self._sent_log_keys = set(list(self._sent_log_keys)[-500:])
+
+        return rows
+
     # ── 보조 ──
     @staticmethod
     def _now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        """MariaDB NOW()와 Dashboard 조회 조건에 맞추기 위해 로컬 시간으로 전송."""
+        return datetime.now().replace(microsecond=0).isoformat()
 
     @staticmethod
     def _local_ip() -> str:
