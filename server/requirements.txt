@@ -3,3 +3,6 @@
 flask
 waitress
 xlwings
+pandas
+# 서버 PC CPU/RAM/디스크 지표(/api/server_status)용. 미설치 시 해당 API만 비활성.
+psutil

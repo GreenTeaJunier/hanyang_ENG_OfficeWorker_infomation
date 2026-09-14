@@ -106,6 +106,8 @@ pip install -r requirements.txt
 python server.py
 ```
 
+`사원명부.xlsx`는 `이름 | IP | PCNAME | 팀 | 공종 | 권한` 헤더를 기준으로 읽으며(pandas), 서버 실행 시 `server/` 폴더에서 실행해야 리포트/설정 파일이 같은 폴더에 생성됩니다.
+
 현재 기본 서버 구조는 다음 파일을 사용합니다.
 
 | 파일 | 설명 |
@@ -127,6 +129,9 @@ python server.py
 | GET/POST | `/api/zone_limits` | 구역별 접속 제한 인원 조회/저장 |
 | POST | `/api/verify_execution` | 범용 프로그램 실행 인가 검증 |
 | GET | `/api/execution_logs`, `/api/denied_summary` | 실행 인가 로그/거부 요약 |
+| GET | `/api/server_status` | 서버 PC CPU/RAM/디스크 사용률 (psutil) |
+| GET | `/api/active_clients` | 최근 5분 내 활성 클라이언트/토폴로지 상태 |
+| POST | `/api/bom_auth`, `/bom/start_token`, `/bom/verify_token` | BOM 매크로 실행 인가 (토큰 방식) |
 
 ---
 
