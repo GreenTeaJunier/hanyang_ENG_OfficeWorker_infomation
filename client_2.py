@@ -8,7 +8,7 @@ import os
 import winreg
 import threading
 import logging
-import json # json형태로 로그를 예브게 출력하기 위해추가
+import json  # json형태로 로그를 예쁘게 출력하기 위해 추가
 from PIL import Image, ImageDraw
 import pystray
 from datetime import datetime
@@ -23,7 +23,7 @@ CHECK_INTERVAL = 10
 AUTOSTART_NAME = "HanyangENG_Monitor"
 
 # 💡 로그 파일 경로 (.exe와 같은 폴더)
-APP_DIR = os.path.dirname(sys.executable) if getattr(sys.'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+APP_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(APP_DIR, "client_debug.log")
 # ==========================================
 
@@ -38,7 +38,7 @@ def log(msg):
     line = f"[{timestamp}] {msg}"
     print(line)
     debug_log_lines.append(line)
-    if len(debug_log_lines) > 500: # 로그가 많아질 수 있으므로 보관 개수 증가
+    if len(debug_log_lines) > 500:  # 로그가 많아질 수 있으므로 보관 개수 증가
         debug_log_lines.pop(0)
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
@@ -50,33 +50,35 @@ def log(msg):
 # 💡 0. 중복 실행 시 기존 프로세스 강제 종료
 # ==========================================
 
-def kill_existion_insance():
-  current_pid = os.getpid()
-  current_proc = psutil.Process(current_pid)
-  my_script_name = os.path.basename(__file__)
+def kill_existing_instance():
+    current_pid = os.getpid()
+    is_frozen = getattr(sys, 'frozen', False)
+    # exe 빌드 시: exe 파일명 / .py 실행 시: python.exe
+    my_name = os.path.basename(sys.executable)
+    my_script_name = os.path.basename(__file__)
 
-  killed_count = 0
-  for proc in psutil.process_iter(['pid','name','cmdline']):
-    try:
-      if proc.info['pid'] == curret_pid:
-        continue
+    killed_count = 0
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if proc.info['pid'] == current_pid:
+                continue
 
-      if proc.info['name'] and proc.info['name'].lower() == my_name.lower():
-        if is_frozen:
-          proc.terminate()
-          proc.wait(timeout=3)
-          killed_count += 1
-        else:
-          cmdline = proc.info.get('cmdline')
-          if cmdline and any(my_script_name in cmd_part for cmd_part in cmdline):
-            proc.terminate()
-            proc.wait(timeout=3)
-            killed_count += 1
-        excc ept (psutil.NosuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
-          pass
+            if proc.info['name'] and proc.info['name'].lower() == my_name.lower():
+                if is_frozen:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                    killed_count += 1
+                else:
+                    cmdline = proc.info.get('cmdline')
+                    if cmdline and any(my_script_name in cmd_part for cmd_part in cmdline):
+                        proc.terminate()
+                        proc.wait(timeout=3)
+                        killed_count += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+            pass
 
     if killed_count > 0:
-      log(f"기존에 실행 중이던 프로세스 {killed_count}개를 강제 종료 했습니다.")
+        log(f"기존에 실행 중이던 프로세스 {killed_count}개를 강제 종료 했습니다.")
 
 # ==========================================
 # 💡 Windows 시작 시 자동 실행 등록
@@ -114,7 +116,7 @@ def register_autostart():
 # ==========================================
 
 failed_queue = []
-stop_event = threading.Evnt()
+stop_event = threading.Event()
 
 def get_local_ip():
     try:
@@ -145,7 +147,7 @@ def get_detailed_window_title(process_name):
     IsWindowVisible = ctypes.windll.user32.IsWindowVisible
 
     found_titles = []
-  
+
     def foreach_window(hwnd, lParam):
         if IsWindowVisible(hwnd):
             pid = ctypes.c_ulong()
@@ -161,7 +163,6 @@ def get_detailed_window_title(process_name):
     EnumWindows(EnumWindowsProc(foreach_window), 0)
     return " / ".join(found_titles) if found_titles else "창 제목 없음 (백그라운드)"
 
-# 💡 S5D 시작 감지용 상태 저장 (프로세스별 최초 감지 시각)
 def send_status():
     global failed_queue
     hostname = socket.gethostname()
@@ -171,40 +172,41 @@ def send_status():
     log("프로세스 상태 확인 및 전송 준비중...")
 
     for proc_name in TARGET_PROCESSES:
-      window_details = get_detailed_window_title(proc_name)
-      is_running = bool(window_details is not None)
+        # get_detailed_window_title은 프로세스가 없으면 None을 반환한다.
+        window_details = get_detailed_window_title(proc_name)
+        is_running = window_details is not None
 
-      payload = 
-      {
+        payload = {
             "ip": ip_address,
             "hostname": hostname,
             "process_name": proc_name,
-            "is_running": True,
-            "details": window_details if window_details else "창 제목 없음"
-      }
-      failed_queue.append(payload)
-      
+            "is_running": is_running,
+            "details": (window_details if window_details else "창 제목 없음") if is_running else ""
+        }
+        failed_queue.append(payload)
+
     remaining_queue = []
     headers = {"X-API-Key": API_KEY}
 
     for p in failed_queue:
         try:
             log(f"[데이터 전송 시도] 목적지 : {SERVER_URL}")
-            log(f"[전송 데이터] {json.dumps(p. ensure_ascii=false)}")
+            log(f"[전송 데이터] {json.dumps(p, ensure_ascii=False)}")
 
             res = requests.post(SERVER_URL, json=p, headers=headers, timeout=5, proxies={"http": None, "https": None})
 
-        if res.status_code == 200:
-            log(f"[전송 성공] {p["process_name']} 상태 (200 ok)")
-        elif: res,status_code == 403:
-            log(f"[전송 실패] 미인가 거부 (403) - 데이터 폐기")
-        else:
-            log(f"[네트워크 오류] 서버 응답 코드: {e}")
-            remaining_queue.append(p)
+            if res.status_code == 200:
+                log(f"[전송 성공] {p['process_name']} 상태 (200 OK)")
+            elif res.status_code == 403:
+                log("[전송 실패] 미인가 거부 (403) - 데이터 폐기")
+            else:
+                log(f"[네트워크 오류] 서버 응답 코드: {res.status_code}")
+                remaining_queue.append(p)
 
         except requests.exceptions.RequestException as e:
             log(f"[네트워크 오류] 서버에 연결할 수 없습니다: {e}")
-            remaining_queue.append(p0
+            remaining_queue.append(p)
+
     failed_queue = remaining_queue[-50:]
 
 def monitoring_task():
@@ -221,8 +223,8 @@ def monitoring_task():
 
 def check_server_connection():
     try:
-        server_base = SERVER_URL.rsplit('/',1)[0]
-        res = requests.get(server_base + "/", timeout=3, proxies={"https": None, "https": None})
+        server_base = SERVER_URL.rsplit('/', 1)[0]
+        res = requests.get(server_base + "/", timeout=3, proxies={"http": None, "https": None})
         return res.status_code == 200
     except:
         return False
@@ -231,7 +233,7 @@ def check_server_connection():
 # 💡 트레이 아이콘 + 메뉴
 # ==========================================
 def create_tray_icon():
-    image = Image.new('RGBA', (64, 64), color="fafafc")
+    image = Image.new('RGBA', (64, 64), color="#FAFAFC")
     draw = ImageDraw.Draw(image)
     draw.ellipse((8, 8, 56, 56), fill="#3182CE", outline="white", width=2)
     return image
@@ -311,7 +313,7 @@ if __name__ == '__main__':
             icon.visible = True
             log("트레이 아이콘 활성화 완료")
 
-            def notifty_status():
+            def notify_status():
                 if check_server_connection():
                     log("최초 서버 연결 테스트 성공")
                     icon.notify("서버 연결 성공! 관제가 시작되었습니다.", "한양이엔지 관제")
@@ -321,7 +323,7 @@ if __name__ == '__main__':
 
             threading.Thread(target=notify_status, daemon=True).start()
 
-        tray_icon.run(setup=on_tray_ready)
+        tray_icon.run(setup=setup_and_check)
 
     except Exception as e:
         log(f"치명적 오류: {e}")
