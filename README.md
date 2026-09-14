@@ -15,21 +15,32 @@ monitor/hanyang_monitor.py
 
 `Client.py`와 `viewer_v4.py`는 `hanyang_monitor.py`로 통합되었고, 구버전 원본 보관 폴더(`legacy/`)는 삭제했습니다.
 
+루트의 `Client-1.py`, `client_2.py`는 대시보드 없이 백그라운드 전송만 하는 경량 클라이언트입니다.
+자동 시작 등록 이름이 통합 모니터와 같으므로 한 PC에는 셋 중 하나만 설치하세요.
+
 ---
 
 ## 폴더 구조
 
 ```text
 .
-├── monitor/                 # 통합 독립실행 프로그램
-│   ├── hanyang_monitor.py   # 백그라운드 모니터링 + 관제 대시보드 + 트레이 상주
+├── monitor/                            # 통합 독립실행 프로그램
+│   ├── hanyang_monitor.py              # 백그라운드 모니터링 + 관제 대시보드 + 트레이 상주
+│   ├── hanyang_monitor_mariadb.py      # MariaDB(HYserver 8080) + NMS 콜렉터 연동 변형 (HYserver 필요)
+│   ├── hanyang_monitor_mariadb_build.txt
+│   ├── nms_agent_config.example.json
 │   └── requirements.txt
-├── server/                  # 관제 수집 서버
+├── server/                             # 관제 수집 서버 (2026-09-09 최신본)
 │   ├── server.py
 │   └── requirements.txt
-├── admin/                   # 접속 제한 인원 설정 GUI
+├── admin/                              # 접속 제한 인원 설정 GUI
 │   ├── admin.py
 │   └── requirements.txt
+├── Pyeongtaek_5D_Site_Server/          # MariaDB 전환 서버 실행 파일 (HYserver.py 미포함, 현재 실행 불가)
+│   ├── HYserver_mariadb.py
+│   └── HYserver_mariadb_run.txt
+├── Client-1.py                         # 경량 클라이언트 (로그: %APPDATA%\HanyangENG_Monitor)
+├── client_2.py                         # 경량 클라이언트 (로그: exe 옆, 중복 실행 시 기존 프로세스 종료)
 ├── .gitignore
 └── README.md
 ```
@@ -137,15 +148,18 @@ python server.py
 
 ## 사원명부 형식
 
-기본 서버를 사용할 경우 `server/사원명부.xlsx`는 아래 순서를 따릅니다.
+`server/사원명부.xlsx` 첫 행은 헤더여야 하며, 서버는 헤더 이름으로 열을 찾습니다. 아래 표준 순서를 권장합니다.
 
-| 열 | 내용 | 예시 |
-|----|------|------|
-| A | 이름 | 홍길동 |
-| B | IP 주소 | 12.26.204.51 |
-| C | PC 이름 | PC-DESIGN-01 |
-| D | 팀 | 설계1팀 |
-| E | 공종 | S.GAS |
+| 열 | 헤더 | 내용 | 예시 | 비고 |
+|----|------|------|------|------|
+| A | 이름 | 사원명 | 홍길동 | |
+| B | IP | IP 주소 | 12.26.204.51 | 필수. 없으면 전체 미인가 처리 |
+| C | PCNAME | PC 이름 | PC-DESIGN-01 | |
+| D | 팀 | 팀 | 설계1팀 | |
+| E | 공종 | 공종 | S.GAS | |
+| F | 권한 | 사용 허용 여부 | Y | 비우면 허용. N/NO/차단/DENY 등이면 서버가 제외 |
+
+서버는 헤더 별칭도 인식합니다(예: 성명, IP주소, PC이름, 부서, 공정). 단, `monitor/hanyang_monitor.py`의 대시보드는 열 위치(A~E) 기준으로 읽고 `권한` 열을 보지 않으므로, **열 순서는 위 표준을 그대로 유지**하고 헤더 A열은 `이름`, B열은 `IP`로 적어야 양쪽이 모두 정상 동작합니다.
 
 ---
 
@@ -166,5 +180,5 @@ API_KEY = "HanyangENG-Monitor-2026!"
 ## Git 관리 기준
 
 - 운영/수정 기준은 `monitor/hanyang_monitor.py`입니다.
-- 구버전 `Client.py`, `viewer_v4.py`, `legacy/` 폴더는 삭제되었습니다.
+- 구버전 `Client.py`, `viewer_v4.py`, `legacy/` 폴더는 삭제되었습니다. 경량 클라이언트는 `Client-1.py`, `client_2.py`입니다.
 - 런타임 생성 데이터(`report_*.csv`, `사원명부.xlsx`, 로그, 설정 파일)는 `.gitignore`로 저장소에서 제외합니다.
