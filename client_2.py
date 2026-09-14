@@ -187,61 +187,24 @@ def send_status():
     remaining_queue = []
     headers = {"X-API-Key": API_KEY}
 
-        if not running:
-            # 프로세스 꺼짐 → 감지 기록 초기화
-            if proc_name in _process_first_seen:
-                del _process_first_seen[proc_name]
-                log(f"{proc_name} 종료 감지")
-            payload = {
-                "ip": ip_address, "hostname": hostname,
-                "process_name": proc_name, "is_running": False, "details": ""
-            }
-            failed_queue.append(payload)          
-            continue
-
-        # 프로세스 실행 중 → 최초 감지 시각 기록
-        if proc_name not in _process_first_seen:
-            _process_first_seen[proc_name] = now_ts
-            log(f"{proc_name} 새로 감지 — {S5D_STARTUP_GRACE_SEC}초 유예 후 창 제목 조회")
-
-        # 💡 2단계: S5D는 시작 후 15초 대기 (Tiara 보안 모듈 초기화 회피)
-        elapsed = now_ts - _process_first_seen[proc_name]
-        if proc_name.lower() == "s5d.exe" and elapsed < S5D_STARTUP_GRACE_SEC:
-            # 유예 기간 중 — 창 제목 조회 스킵, 실행 중만 보고
-            payload = {
-                "ip": ip_address, "hostname": hostname,
-                "process_name": proc_name, "is_running": True,
-                "details": f"초기화 대기 중 ({int(S5D_STARTUP_GRACE_SEC - elapsed)}초)"
-            }
-            failed_queue.append(payload)
-            continue
-
-        # 💡 3단계: 유예 완료 → 창 제목 조회
-        window_details = get_detailed_window_title(proc_name)
-
-        # 💡 4단계: DDWORKS는 Hookup Designer 창이 열려야 유효
-        # [구역명] 패턴이 없으면 아직 작업 시작 전 → 미실행으로 처리
-        if proc_name.lower() == "dinno.hu3d.wpf.hookupdesigner.exe":
-            if not window_details or "[" not in window_details:
-                payload = {
-                    "ip": ip_address, "hostname": hostname,
-                    "process_name": proc_name, "is_running": False, "details": ""
-                }
-                failed_queue.append(payload)
-                continue
-
-
-
     for p in failed_queue:
         try:
+            log(f"[데이터 전송 시도] 목적지 : {SERVER_URL}")
+            log(f"[전송 데이터] {json.dumps(p. ensure_ascii=false)}")
+
             res = requests.post(SERVER_URL, json=p, headers=headers, timeout=5, proxies={"http": None, "https": None})
-            if res.status_code == 403:
-                log(f"서버에서 미인가 거부 (403) — 데이터 폐기")
-            elif res.status_code != 200:
-                remaining_queue.append(p)
-        except requests.exceptions.RequestException:
+
+        if res.status_code == 200:
+            log(f"[전송 성공] {p["process_name']} 상태 (200 ok)")
+        elif: res,status_code == 403:
+            log(f"[전송 실패] 미인가 거부 (403) - 데이터 폐기")
+        else:
+            log(f"[네트워크 오류] 서버 응답 코드: {e}")
             remaining_queue.append(p)
 
+        except requests.exceptions.RequestException as e:
+            log(f"[네트워크 오류] 서버에 연결할 수 없습니다: {e}")
+            remaining_queue.append(p0
     failed_queue = remaining_queue[-50:]
 
 def monitoring_task():
@@ -256,36 +219,21 @@ def monitoring_task():
             time.sleep(1)
     log("모니터링 스레드 종료")
 
-# ==========================================
-# 💡 시작 알림 — Win32 API 사용 (tkinter 충돌 완전 제거)
-# ==========================================
-def show_startup_notification():
-    """💡 tkinter 대신 Win32 풍선 알림 또는 간단한 메시지로 시작 알림
-    pystray의 notify를 사용하면 트레이 아이콘 생성 후에 가능하므로,
-    여기서는 콘솔/로그에만 기록하고 트레이 생성 후 notify로 표시
-    """
-    # 서버 연결 테스트
+def check_server_connection():
     try:
-        server_base = SERVER_URL.rsplit('/', 1)[0]
-        res = requests.get(server_base + "/", timeout=3,
-                           proxies={"http": None, "https": None})
-        if res.status_code == 200:
-            log("서버 연결 성공")
-            return True
-        else:
-            log(f"서버 응답 이상 (코드: {res.status_code})")
-            return False
+        server_base = SERVER_URL.rsplit('/',1)[0]
+        res = requests.get(server_base + "/", timeout=3, proxies={"https": None, "https": None})
+        return res.status_code == 200
     except:
-        log("서버 연결 실패 — 백그라운드에서 재시도합니다.")
         return False
 
 # ==========================================
 # 💡 트레이 아이콘 + 메뉴
 # ==========================================
 def create_tray_icon():
-    image = Image.new('RGBA', (64, 64), color=(0, 0, 0, 0))
+    image = Image.new('RGBA', (64, 64), color="fafafc")
     draw = ImageDraw.Draw(image)
-    draw.ellipse((4, 4, 60, 60), fill="#00479A", outline="white", width=3)
+    draw.ellipse((8, 8, 56, 56), fill="#3182CE", outline="white", width=2)
     return image
 
 def on_exit_clicked(icon, item):
@@ -294,7 +242,6 @@ def on_exit_clicked(icon, item):
     icon.stop()
 
 def on_debug_clicked(icon, item):
-    """💡 디버그 창 열기 — 별도 스레드에서 tkinter 실행"""
     threading.Thread(target=_show_debug_window, daemon=True).start()
 
 def _show_debug_window():
@@ -304,7 +251,7 @@ def _show_debug_window():
 
     debug_root = tk.Tk()
     debug_root.title("🔍 클라이언트 디버그 로그")
-    debug_root.geometry("600x400")
+    debug_root.geometry("650x450")
     debug_root.attributes("-topmost", True)
 
     txt = scrolledtext.ScrolledText(debug_root, font=("Consolas", 9), bg="#1E1E1E", fg="#D4D4D4",
@@ -343,16 +290,12 @@ if __name__ == '__main__':
         log("=" * 40)
         log("클라이언트 시작")
 
-        # 💡 1단계: Windows 시작 시 자동 실행 등록
+        kill_existing_instance()
         register_autostart()
-
-        # 💡 2단계: 서버 연결 테스트 (tkinter 없이)
-        server_ok = show_startup_notification()
 
         # 💡 3단계: 모니터링 스레드 시작
         monitor_thread = threading.Thread(target=monitoring_task, daemon=True)
         monitor_thread.start()
-        log("모니터링 스레드 시작됨")
 
         # 💡 4단계: 트레이 아이콘 실행
         menu = pystray.Menu(
@@ -364,12 +307,16 @@ if __name__ == '__main__':
 
         tray_icon = pystray.Icon("HanyangMonitor", create_tray_icon(), "한양이엔지 모니터링", menu)
 
-        # 💡 트레이 생성 후 풍선 알림 표시
-        def on_tray_ready(icon):
-            if server_ok:
-                icon.notify("서버 연결 성공! 관제가 시작되었습니다.", "한양이엔지 관제")
-            else:
-                icon.notify("서버 연결 실패 — 백그라운드에서 재시도합니다.", "한양이엔지 관제")
+        def setup_and_check(icon):
+            icon.visible = True
+            log("트레이 아이콘 활성화 완료")
+
+            def notifty_status():
+                if check_server_connection():
+                    log("최초 서버 연결 테스트 성공")
+
+
+
 
         tray_icon.run(setup=on_tray_ready)
 
