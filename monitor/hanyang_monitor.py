@@ -58,6 +58,28 @@ API_KEY = "HanyangENG-Monitor-2026!"
 # ==========================================
 # 💡 모니터링 결과를 전송할 서버 엔드포인트
 STATUS_REPORT_URL = f"{SERVER_URL}/receive_status"
+# 💡 설정창에서 서버 주소를 바꾸지 않았을 때 사용하는 기본값
+DEFAULT_SERVER_URL = SERVER_URL
+DEFAULT_SERVER_PORT = 5000
+
+def normalize_server_url(text):
+    """설정창 입력값(IP / IP:포트 / http://IP:포트)을 SERVER_URL 형식으로 정규화
+    빈 값이면 "" 반환. 스킴이 없으면 http://, 포트가 없으면 기본 포트를 붙인다."""
+    value = (text or "").strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "http://" + value
+    host_part = value.split("://", 1)[1]
+    if ":" not in host_part:
+        value = f"{value}:{DEFAULT_SERVER_PORT}"
+    return value
+
+def apply_server_url(url):
+    """실행 중인 프로그램 전체(뷰어 API 호출 + 백그라운드 전송)에 서버 주소 반영"""
+    global SERVER_URL, STATUS_REPORT_URL
+    SERVER_URL = url
+    STATUS_REPORT_URL = f"{SERVER_URL}/receive_status"
 # 💡 감지 대상 프로세스 (S5D, DDWORKS)
 TARGET_PROCESSES = ["S5D.exe", "dinno.hu3d.wpf.hookupdesigner.exe"]
 # 💡 상태 전송 주기 (초)
@@ -528,6 +550,11 @@ class MonitorViewer:
         self.settings = load_settings()
         self._update_job = None  # 💡 자동 갱신 타이머 ID
 
+        # 💡 설정 파일에 저장된 서버 주소가 있으면 코드 기본값 대신 사용
+        saved_server_url = normalize_server_url(self.settings.get("server_url", ""))
+        if saved_server_url:
+            apply_server_url(saved_server_url)
+
         # 💡 백그라운드 모니터링 / 트레이 연동 상태
         self.agent = None             # MonitoringAgent (main()에서 주입)
         self.tray_icon = None         # pystray Icon (main()에서 주입)
@@ -934,7 +961,7 @@ class MonitorViewer:
     def open_settings(self):
         dlg = tk.Toplevel(self.root)
         dlg.title("⚙ 설정")
-        dlg.geometry("500x520")
+        dlg.geometry("500x620")
         dlg.resizable(False, False)
         dlg.configure(bg=self.colors["card_bg"])
         dlg.transient(self.root)
@@ -942,7 +969,7 @@ class MonitorViewer:
 
         dlg.update_idletasks()
         x = self.root.winfo_x() + (self.root.winfo_width() - 500) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - 520) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 620) // 2
         dlg.geometry(f"+{x}+{y}")
 
         tk.Label(dlg, text="⚙ 뷰어 설정", font=("맑은 고딕", 13, "bold"),
@@ -1066,6 +1093,46 @@ class MonitorViewer:
             combo_var.set("즐겨찾기 (버튼 없음)")
         combo.pack(side=tk.LEFT, padx=10)
 
+        # ── 관제 서버 주소 (호스트 IP) ──
+        ttk.Separator(tab_general, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=15, pady=8)
+
+        tk.Label(tab_general, text="🌐 관제 서버 주소 (호스트 IP)",
+                 font=("맑은 고딕", 10, "bold"),
+                 bg=self.colors["card_bg"], fg=self.colors["primary"]).pack(anchor=tk.W, padx=15, pady=(0, 2))
+        tk.Label(tab_general,
+                 text=f"IP만 입력하면 기본 포트({DEFAULT_SERVER_PORT})가 붙습니다. 비우면 기본값으로 복원됩니다.",
+                 font=("맑은 고딕", 9),
+                 bg=self.colors["card_bg"], fg="#888888").pack(anchor=tk.W, padx=15)
+
+        frame_server = tk.Frame(tab_general, bg=self.colors["card_bg"])
+        frame_server.pack(fill=tk.X, padx=15, pady=(5, 2))
+
+        server_var = tk.StringVar(value=SERVER_URL)
+        tk.Entry(frame_server, textvariable=server_var,
+                 font=("맑은 고딕", 10), width=32).pack(side=tk.LEFT)
+
+        lbl_server_test = tk.Label(tab_general, text=f"현재 적용 중: {SERVER_URL}",
+                                   font=("맑은 고딕", 9),
+                                   bg=self.colors["card_bg"], fg="#888888")
+        lbl_server_test.pack(anchor=tk.W, padx=15)
+
+        def test_server_connection():
+            url = normalize_server_url(server_var.get()) or DEFAULT_SERVER_URL
+            lbl_server_test.config(text=f"⏳ {url} 연결 확인 중...", fg=self.colors["primary"])
+            dlg.update()
+            try:
+                res = requests.get(f"{url}/", timeout=3, proxies={"http": None, "https": None})
+                if res.status_code == 200:
+                    lbl_server_test.config(text=f"🟢 연결 성공: {url}", fg=self.colors["status_online"])
+                else:
+                    lbl_server_test.config(text=f"⚠️ 응답 코드 {res.status_code}: {url}",
+                                           fg=self.colors["status_offline"])
+            except requests.exceptions.RequestException as e:
+                lbl_server_test.config(text=f"❌ 연결 실패: {str(e)[:40]}", fg=self.colors["status_offline"])
+
+        tk.Button(frame_server, text="연결 테스트", font=("맑은 고딕", 9),
+                  command=test_server_connection).pack(side=tk.LEFT, padx=(5, 0))
+
         # ======== 탭 2: 접속 제한 현황 (읽기 전용 — 서버에서 관리) ========
         tab_limits = tk.Frame(notebook, bg=self.colors["card_bg"])
         notebook.add(tab_limits, text="  🚨 접속 제한 현황  ")
@@ -1135,8 +1202,23 @@ class MonitorViewer:
                 internal_key = REGION_BUTTONS.get(selected_label, "평택")
                 self.settings["default_region"] = internal_key
 
+            # 서버 주소 저장 (기본값이면 설정 파일에서 제거 → 코드 기본값 사용)
+            new_server_url = normalize_server_url(server_var.get()) or DEFAULT_SERVER_URL
+            server_changed = (new_server_url != SERVER_URL)
+            if new_server_url == DEFAULT_SERVER_URL:
+                self.settings.pop("server_url", None)
+            else:
+                self.settings["server_url"] = new_server_url
+
             save_settings(self.settings)
             dlg.destroy()
+
+            # 💡 서버 주소가 바뀌면 즉시 반영하고 사원명부/로그를 새 서버에서 다시 받아온다
+            if server_changed:
+                apply_server_url(new_server_url)
+                self.debug_log(f"서버 주소 변경: {new_server_url}")
+                self.auto_connect_and_start()
+                return
 
             # 현재 화면 갱신
             if not self.selected_region:
