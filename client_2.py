@@ -314,9 +314,12 @@ if __name__ == '__main__':
             def notifty_status():
                 if check_server_connection():
                     log("최초 서버 연결 테스트 성공")
+                    icon.notify("서버 연결 성공! 관제가 시작되었습니다.", "한양이엔지 관제")
+                else:
+                    log("최초 서버 연결 테스트 실패 (대기 중)")
+                    icon.notify("서버 연결 대기 중...", "한양이엔지 관제")
 
-
-
+            threading.Thread(target=notify_status, daemon=True).start()
 
         tray_icon.run(setup=on_tray_ready)
 
