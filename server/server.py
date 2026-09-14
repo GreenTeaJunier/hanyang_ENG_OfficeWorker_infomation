@@ -686,26 +686,12 @@ def active_clients():
     except Exception as e:
         return jsonify({"message": f"활성 클라이언트 조회 오류: {str(e)}"}), 500
 
-BOM_AUTH_STRICT_REMOTE_IP = True
-
 # 로그 모드:
 # - "deny_only"              : 차단 기록만 저장. 로그량 최소. 권장.
 # - "allow_and_deny"         : 승인/차단 모두 저장.
 # - "first_allow_per_ip_day" : 차단은 항상 저장, 승인은 IP별 하루 첫 1회만 저장.
 BOM_AUTH_LOG_MODE = "deny_only"
 _BOM_ALLOW_LOG_CACHE = set()
-
-
-def _bom_get_request_ip() -> str:
-    return request.remote_addr or ""
-
-
-def _bom_employee_record(ip_addr: str) -> dict:
-    if ip_addr in EMPLOYEE_INFO:
-        return EMPLOYEE_INFO.get(ip_addr) or {}
-    if ip_addr in AUTHORIZED_IPS:
-        return {"name": AUTHORIZED_IPS.get(ip_addr, "")}
-    return {}
 
 
 def _bom_should_write_log(result: str, request_ip: str, program: str) -> bool:
@@ -729,23 +715,6 @@ def _bom_should_write_log(result: str, request_ip: str, program: str) -> bool:
 
     # 기본값 deny_only: 승인 로그는 저장하지 않습니다.
     return False
-
-
-def _bom_write_auth_log(row: dict) -> None:
-    if not _bom_should_write_log(row.get("result", ""), row.get("request_ip", ""), row.get("program", "")):
-        return
-
-    log_file = globals().get("EXECUTION_LOG_FILE", "execution_log.csv")
-    fieldnames = [
-        "timestamp", "program", "result", "reason", "request_ip",
-        "matched_ip", "employee_name", "team", "gongjong", "pc_name", "windows_user",
-    ]
-    file_exists = os.path.exists(log_file)
-    with open(log_file, "a", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 @app.route("/api/bom_auth", methods=["POST"])
@@ -859,7 +828,11 @@ def _bom_write_auth_log(row):
     """
     기존 execution_log.csv와 최대한 호환되는 컬럼으로 기록한다.
     로그 기록 실패가 인증 API 500으로 번지지 않도록 방어한다.
+    BOM_AUTH_LOG_MODE 설정에 따라 승인(ALLOW) 로그 저장 여부를 결정한다.
     """
+    if not _bom_should_write_log(row.get("result", ""), row.get("request_ip", ""), row.get("program", "")):
+        return
+
     fieldnames = [
         "timestamp",
         "program",
@@ -1262,7 +1235,4 @@ if __name__ == '__main__':
     print(f" └ NMS 추가:")
     print(f"     GET  /api/server_status     - 서버 CPU/RAM/디스크")
     print(f"     GET  /api/active_clients    - 활성 클라이언트/토폴로지")
-    print(f" └ [Phase 2] dns_portal 연동:")
-    print(f"     GET  /api/portal/status     - dns_portal 카드용 헬스/지표")
-    print(f"     POST /api/portal/notify_deny- 비인가 차단 이벤트를 포털 티켓으로 등록")
     serve(app, host='0.0.0.0', port=5000)
